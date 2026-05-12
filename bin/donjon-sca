@@ -88,8 +88,9 @@ cmd_setup() {
   "$PY" -m pip install --quiet --editable "$LASCAR_SRC"          # editable: examples/ + tutorial/ live in $LASCAR_SRC
   "$PY" -m pip install --quiet --editable "$RAINBOW_SRC"         # editable: core deps (unicorn, capstone, pyelftools) + examples/ live in $RAINBOW_SRC
   # lascar's editable install does not reliably pull its install_requires — pin the
-  # core (non-ML, non-GUI) subset it imports unconditionally:
-  "$PY" -m pip install --quiet numpy h5py psutil click numba progressbar2 scikit-learn scipy matplotlib
+  # core (non-ML, non-GUI) subset it imports unconditionally; + colorama for
+  # rainbow's `Print` verbose-trace flag.
+  "$PY" -m pip install --quiet numpy h5py psutil click numba progressbar2 scikit-learn scipy matplotlib colorama
   # optional: rainbow's example trace viewer (vispy + pyqt5) — best effort, not needed for analysis
   "$PY" -m pip install --quiet vispy pyqt5 >/dev/null 2>&1 \
     && ok "optional GUI viewer deps (vispy/pyqt5) installed" \
