@@ -83,13 +83,19 @@ cmd_setup() {
 
   # 2. venv + deps
   if [ ! -x "$PY" ]; then say "creating venv"; python3 -m venv "$VENV"; fi
-  say "installing/updating packages (lascar pulls a heavy dep set incl. tensorflow — this can take a few minutes)"
+  say "installing/updating packages (a few minutes on first run)"
   "$PY" -m pip install --quiet --upgrade pip wheel
   "$PY" -m pip install --quiet --editable "$LASCAR_SRC"          # editable: examples/ + tutorial/ live in $LASCAR_SRC
-  "$PY" -m pip install --quiet --editable "$RAINBOW_SRC"         # core (unicorn, capstone, pyelftools); examples/ live in $RAINBOW_SRC
-  "$PY" -m pip install --quiet visplot vispy 'pyqt5' >/dev/null 2>&1 \
-    && ok "optional GUI viewer deps (visplot/vispy/pyqt5) installed" \
-    || warn "optional GUI viewer deps (visplot/vispy/pyqt5) not installed — the example trace viewers won't run, analysis still works"
+  "$PY" -m pip install --quiet --editable "$RAINBOW_SRC"         # editable: core deps (unicorn, capstone, pyelftools) + examples/ live in $RAINBOW_SRC
+  # lascar's editable install does not reliably pull its install_requires — pin the
+  # core (non-ML, non-GUI) subset it imports unconditionally:
+  "$PY" -m pip install --quiet numpy h5py psutil click numba progressbar2 scikit-learn scipy matplotlib
+  # optional: rainbow's example trace viewer (vispy + pyqt5) — best effort, not needed for analysis
+  "$PY" -m pip install --quiet vispy pyqt5 >/dev/null 2>&1 \
+    && ok "optional GUI viewer deps (vispy/pyqt5) installed" \
+    || warn "optional GUI viewer deps (vispy/pyqt5) not installed — example trace viewers won't run, analysis still works"
+  # optional: lascar's ML / profiled engines need tensorflow+keras (heavy ~hundreds of MB) — opt in with:
+  #   donjon-sca python -m pip install tensorflow keras
 
   # 3. CLI on PATH
   ln -sfn "$SELF" "$BIN_DIR/donjon-sca"
@@ -124,16 +130,21 @@ cmd_doctor() {
   if [ -x "$PY" ]; then ok "venv present"; else err "venv missing — run: donjon-sca setup"; rc=1; fi
   if [ -x "$PY" ]; then
     "$PY" - <<'PYEOF' || rc=1
-import importlib, sys
-mods = ["unicorn", "capstone", "rainbow", "lascar", "numpy"]
+import importlib, importlib.metadata as md, sys
+# (import_name, dist_name) — rainbow's distribution is "donjon-rainbow"
+mods = [("unicorn","unicorn"), ("capstone","capstone"), ("rainbow","donjon-rainbow"), ("lascar","lascar"), ("numpy","numpy")]
+def ver(imp, dist):
+    try: return md.version(dist)
+    except Exception:
+        try: return getattr(importlib.import_module(imp), "__version__", "?")
+        except Exception: return "?"
 bad = 0
-for m in mods:
+for imp, dist in mods:
     try:
-        mod = importlib.import_module(m)
-        v = getattr(mod, "__version__", "?")
-        print(f"  OK   {m} {v}")
+        importlib.import_module(imp)
+        print(f"  OK   {imp} {ver(imp, dist)}")
     except Exception as e:
-        print(f"  FAIL {m}: {e}", file=sys.stderr); bad += 1
+        print(f"  FAIL {imp}: {e}", file=sys.stderr); bad += 1
 try:
     from rainbow.devices import rainbow_stm32f215  # noqa
     from rainbow.fault_models import fault_skip      # noqa
@@ -191,11 +202,18 @@ cmd_path() { echo "$VENV/bin"; }
 cmd_version() {
   need_venv
   "$PY" - <<'PYEOF'
-for m in ("rainbow", "lascar", "unicorn", "capstone", "numpy"):
+import importlib, importlib.metadata as md
+# (import_name, dist_name)
+PKGS = [("rainbow","donjon-rainbow"), ("lascar","lascar"), ("unicorn","unicorn"), ("capstone","capstone"),
+        ("numpy","numpy"), ("scipy","scipy"), ("sklearn","scikit-learn"), ("numba","numba"), ("h5py","h5py")]
+for imp, dist in PKGS:
     try:
-        import importlib; print(f"{m:10s} {getattr(importlib.import_module(m), '__version__', '?')}")
+        importlib.import_module(imp)
+        try: v = md.version(dist)
+        except Exception: v = getattr(importlib.import_module(imp), "__version__", "?")
+        print(f"{dist:14s} {v}")
     except Exception as e:
-        print(f"{m:10s} (not importable: {e})")
+        print(f"{dist:14s} (not importable: {e})")
 PYEOF
 }
 
