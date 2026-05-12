@@ -1,0 +1,313 @@
+#!/usr/bin/env bash
+# donjon-sca — driver for the Ledger Donjon side-channel / fault-injection toolchain
+# (rainbow + lascar), installed into a dedicated venv so it stays off the system Python.
+#
+#   donjon-sca setup           bootstrap / update everything (idempotent)
+#   donjon-sca doctor          diagnose the install
+#   donjon-sca run FILE [ARGS] run a harness script inside the toolchain venv
+#   donjon-sca python [ARGS]   the venv's python (e.g. `donjon-sca python -c '...'`)
+#   donjon-sca repl            interactive python with rainbow + lascar pre-imported
+#   donjon-sca new FILE        scaffold a harness template (trace + fault skeleton)
+#   donjon-sca version         print rainbow / lascar / unicorn / capstone versions
+#   donjon-sca path            print the venv's bin dir (e.g. for `export PATH=...`)
+#
+# Layout (override the root with $DONJON_SCA_HOME):
+#   $DONJON_SCA_HOME/venv      the toolchain virtualenv
+#   $DONJON_SCA_HOME/rainbow   git clone of Ledger-Donjon/rainbow (editable install; has examples/)
+#   $DONJON_SCA_HOME/lascar    git clone of Ledger-Donjon/lascar (editable install; has examples/ + tutorial/)
+
+set -euo pipefail
+
+DONJON_HOME="${DONJON_SCA_HOME:-$HOME/.local/share/donjon-sca}"
+VENV="$DONJON_HOME/venv"
+PY="$VENV/bin/python"
+RAINBOW_SRC="$DONJON_HOME/rainbow"
+LASCAR_SRC="$DONJON_HOME/lascar"
+RAINBOW_GIT="https://github.com/Ledger-Donjon/rainbow.git"
+LASCAR_GIT="https://github.com/Ledger-Donjon/lascar.git"
+BIN_DIR="$HOME/.local/bin"
+SKILLS_DIR="$HOME/.claude/skills"
+
+# Resolve this script through any symlink so `setup` can find the skills repo it lives in.
+SELF="$(readlink -f "${BASH_SOURCE[0]}" 2>/dev/null || python3 -c 'import os,sys;print(os.path.realpath(sys.argv[1]))' "${BASH_SOURCE[0]}")"
+REPO_ROOT="$(cd "$(dirname "$SELF")/.." && pwd)"
+
+say()  { printf '\033[1;36m==>\033[0m %s\n' "$*"; }
+ok()   { printf '  \033[1;32mOK\033[0m   %s\n' "$*"; }
+warn() { printf '  \033[1;33mWARN\033[0m %s\n' "$*"; }
+err()  { printf '  \033[1;31mFAIL\033[0m %s\n' "$*" >&2; }
+die()  { printf '\033[1;31merror:\033[0m %s\n' "$*" >&2; exit 1; }
+
+need_venv() { [ -x "$PY" ] || die "toolchain not installed — run: donjon-sca setup"; }
+
+clone_or_pull() {  # $1=git-url  $2=dest
+  if [ -d "$2/.git" ]; then
+    say "updating $(basename "$2")"
+    git -C "$2" pull --ff-only --quiet || warn "git pull failed in $2 (continuing with current checkout)"
+  else
+    say "cloning $(basename "$2")"
+    git clone --quiet "$1" "$2"
+  fi
+}
+
+ensure_path_line() {  # add $BIN_DIR to PATH via shell rc if it's not already on PATH
+  case ":$PATH:" in *":$BIN_DIR:"*) return 0;; esac
+  local line='export PATH="$HOME/.local/bin:$PATH"  # added by donjon-sca'
+  local rc added=0
+  for rc in "$HOME/.bashrc" "$HOME/.zshrc"; do
+    [ -e "$rc" ] || continue
+    if ! grep -qF 'added by donjon-sca' "$rc"; then
+      printf '\n%s\n' "$line" >> "$rc"; added=1
+    fi
+  done
+  if [ "$added" = 1 ]; then
+    warn "$BIN_DIR was not on PATH — appended it to your shell rc; open a new shell or: export PATH=\"$BIN_DIR:\$PATH\""
+  else
+    warn "$BIN_DIR is not on PATH — add: export PATH=\"$BIN_DIR:\$PATH\""
+  fi
+}
+
+cmd_setup() {
+  say "donjon-sca setup  (home: $DONJON_HOME)"
+
+  # 0. OS prerequisites
+  command -v git    >/dev/null 2>&1 || die "git not found — install it (e.g. sudo apt install git)"
+  command -v python3 >/dev/null 2>&1 || die "python3 not found — install it (e.g. sudo apt install python3 python3-venv)"
+  python3 -c 'import venv' 2>/dev/null || die "python3 'venv' module missing — install it (e.g. sudo apt install python3-venv)"
+
+  mkdir -p "$DONJON_HOME" "$BIN_DIR" "$SKILLS_DIR"
+
+  # 1. sources
+  clone_or_pull "$LASCAR_GIT"  "$LASCAR_SRC"
+  clone_or_pull "$RAINBOW_GIT" "$RAINBOW_SRC"
+
+  # 2. venv + deps
+  if [ ! -x "$PY" ]; then say "creating venv"; python3 -m venv "$VENV"; fi
+  say "installing/updating packages (lascar pulls a heavy dep set incl. tensorflow — this can take a few minutes)"
+  "$PY" -m pip install --quiet --upgrade pip wheel
+  "$PY" -m pip install --quiet --editable "$LASCAR_SRC"          # editable: examples/ + tutorial/ live in $LASCAR_SRC
+  "$PY" -m pip install --quiet --editable "$RAINBOW_SRC"         # core (unicorn, capstone, pyelftools); examples/ live in $RAINBOW_SRC
+  "$PY" -m pip install --quiet visplot vispy 'pyqt5' >/dev/null 2>&1 \
+    && ok "optional GUI viewer deps (visplot/vispy/pyqt5) installed" \
+    || warn "optional GUI viewer deps (visplot/vispy/pyqt5) not installed — the example trace viewers won't run, analysis still works"
+
+  # 3. CLI on PATH
+  ln -sfn "$SELF" "$BIN_DIR/donjon-sca"
+  ok "CLI: $BIN_DIR/donjon-sca -> $SELF"
+  ensure_path_line
+
+  # 4. Claude Code skills
+  local s
+  for s in rainbow lascar; do
+    if [ -f "$REPO_ROOT/$s/SKILL.md" ]; then
+      ln -sfn "$REPO_ROOT/$s" "$SKILLS_DIR/$s"
+      ok "skill: $SKILLS_DIR/$s -> $REPO_ROOT/$s"
+    else
+      warn "skill source $REPO_ROOT/$s/SKILL.md not found — is this script running from the my-claude-skills repo?"
+    fi
+  done
+
+  echo
+  cmd_doctor || true
+  echo
+  say "done. Run 'donjon-sca doctor' anytime; 'donjon-sca new my_harness.py' to start a harness."
+  say "Claude Code picks up the new skills on its next session start."
+}
+
+cmd_doctor() {
+  say "donjon-sca doctor"
+  local rc=0
+  echo "  home:        $DONJON_HOME"
+  echo "  venv python: $PY"
+  echo "  rainbow src: $RAINBOW_SRC"
+  echo "  lascar src:  $LASCAR_SRC"
+  if [ -x "$PY" ]; then ok "venv present"; else err "venv missing — run: donjon-sca setup"; rc=1; fi
+  if [ -x "$PY" ]; then
+    "$PY" - <<'PYEOF' || rc=1
+import importlib, sys
+mods = ["unicorn", "capstone", "rainbow", "lascar", "numpy"]
+bad = 0
+for m in mods:
+    try:
+        mod = importlib.import_module(m)
+        v = getattr(mod, "__version__", "?")
+        print(f"  OK   {m} {v}")
+    except Exception as e:
+        print(f"  FAIL {m}: {e}", file=sys.stderr); bad += 1
+try:
+    from rainbow.devices import rainbow_stm32f215  # noqa
+    from rainbow.fault_models import fault_skip      # noqa
+    from rainbow import TraceConfig, HammingWeight   # noqa
+    print("  OK   rainbow API surface importable")
+except Exception as e:
+    print(f"  FAIL rainbow API: {e}", file=sys.stderr); bad += 1
+try:
+    from lascar import Session, CpaEngine, TraceBatchContainer, TTestEngine  # noqa
+    print("  OK   lascar API surface importable")
+except Exception as e:
+    print(f"  FAIL lascar API: {e}", file=sys.stderr); bad += 1
+sys.exit(1 if bad else 0)
+PYEOF
+  fi
+  local s
+  for s in rainbow lascar; do
+    if [ -L "$SKILLS_DIR/$s" ]; then ok "skill linked: $SKILLS_DIR/$s -> $(readlink "$SKILLS_DIR/$s")";
+    elif [ -e "$SKILLS_DIR/$s" ]; then ok "skill present: $SKILLS_DIR/$s";
+    else warn "skill not installed: $SKILLS_DIR/$s (run: donjon-sca setup)"; fi
+  done
+  case ":$PATH:" in *":$BIN_DIR:"*) ok "$BIN_DIR on PATH";; *) warn "$BIN_DIR not on PATH";; esac
+  return $rc
+}
+
+PREAMBLE='import numpy as np
+from rainbow import *
+from rainbow.devices import *
+from rainbow.generics import *
+from rainbow.fault_models import *
+from rainbow.leakage_models import *
+from lascar import *
+try:
+    from lascar.tools.aes import sbox
+except Exception:
+    pass
+print("rainbow + lascar ready.  e.g.  e = rainbow_cortexm(); e.load(\"fw.elf\"); e.start(...)")'
+
+cmd_repl() {
+  need_venv
+  if [ -x "$VENV/bin/ipython" ]; then exec "$VENV/bin/ipython" -i -c "$PREAMBLE";
+  else exec "$PY" -i -c "$PREAMBLE"; fi
+}
+
+cmd_run() {
+  need_venv
+  [ $# -ge 1 ] || die "usage: donjon-sca run HARNESS.py [args...]"
+  exec "$PY" "$@"
+}
+
+cmd_python() { need_venv; exec "$PY" "$@"; }
+
+cmd_path() { echo "$VENV/bin"; }
+
+cmd_version() {
+  need_venv
+  "$PY" - <<'PYEOF'
+for m in ("rainbow", "lascar", "unicorn", "capstone", "numpy"):
+    try:
+        import importlib; print(f"{m:10s} {getattr(importlib.import_module(m), '__version__', '?')}")
+    except Exception as e:
+        print(f"{m:10s} (not importable: {e})")
+PYEOF
+}
+
+cmd_new() {
+  [ $# -eq 1 ] || die "usage: donjon-sca new HARNESS.py"
+  local f="$1"
+  [ -e "$f" ] && die "$f already exists"
+  cat > "$f" <<'PYEOF'
+#!/usr/bin/env python3
+"""Rainbow harness — run with:  donjon-sca run THIS_FILE.py
+
+Two ready-to-fill blocks:
+  A) side-channel: emulate a function over N random inputs, collect Hamming-weight
+     traces, hand them to lascar (CPA / TVLA / SNR).
+  B) fault injection: sweep an instruction-skip (or stuck-at) fault over the call
+     window and report which indices bypass a guard.
+
+See $DONJON_SCA_HOME/rainbow/examples/ (CortexM_AES/, HW_analysis/pin_*.py) and
+$DONJON_SCA_HOME/lascar/examples/ for worked versions.
+"""
+import numpy as np
+from rainbow import TraceConfig, HammingWeight, Print
+from rainbow.devices import rainbow_stm32f215            # or: from rainbow.generics import rainbow_cortexm
+from rainbow.fault_models import fault_skip               # or: fault_stuck_at
+from lascar import TraceBatchContainer, Session, CpaEngine, TTestEngine, SnrEngine, ConsoleOutputMethod, hamming
+
+ELF       = "firmware.elf"        # TODO: build with symbols, don't strip
+FUNC      = "my_crypto_fn"        # TODO: symbol name of the function under test
+RET_SENT  = 0xAAAA_AAAA           # sentinel return address (detect "function returned")
+ARG_BUF   = 0x2000_0100           # TODO: where you'll place the input buffer in RAM
+KEY_BUF   = 0x2000_0200           # TODO: where the (fixed) secret lives
+KEY       = bytes(16)             # TODO
+
+def fresh():
+    e = rainbow_stm32f215(trace_config=TraceConfig(register=HammingWeight(), instruction=True))
+    e.load(ELF)
+    # TODO: if FUNC touches a hardware HASH/AES/SAES/RNG/flash register, stub it with a Unicorn hook:
+    #   import unicorn as uc
+    #   e.emu.hook_add(uc.UC_HOOK_MEM_READ, lambda u,a,addr,sz,v,ud: u.mem_write(addr, b"\\x00"*sz),
+    #                  begin=PERIPH_BASE, end=PERIPH_END)
+    return e
+
+def call(e, inp: bytes):
+    e.reset()
+    e[ARG_BUF] = inp
+    e[KEY_BUF] = KEY
+    e["r0"] = ARG_BUF
+    e["r1"] = KEY_BUF
+    e["lr"] = RET_SENT
+    e.start(e.functions[FUNC][0], RET_SENT, count=200_000)
+
+# ---- A) side-channel ----------------------------------------------------------
+def collect(n=2000):
+    e = fresh()
+    traces, values = [], []
+    for _ in range(n):
+        pt = np.random.randint(0, 256, 16, dtype=np.uint8)
+        call(e, bytes(pt))
+        traces.append(np.array([ev["register"] for ev in e.trace if "register" in ev], dtype=np.uint8))
+        values.append(pt)
+    L = min(t.shape[0] for t in traces)                   # runs can differ in length — truncate
+    return TraceBatchContainer(np.array([t[:L] for t in traces]), np.array(values))
+
+def cpa_byte(container, byte=0):
+    from lascar.tools.aes import sbox
+    eng = CpaEngine(lambda v, g, z=byte: hamming(sbox[v[z] ^ g]), range(256))
+    Session(container, engine=eng, output_method=ConsoleOutputMethod(eng)).run(batch_size=200)
+
+# ---- B) fault injection -------------------------------------------------------
+def bypassed(e) -> bool:
+    # TODO: define "the guard was defeated" — e.g. returned "accept" with bad input,
+    #       or a secret leaked into a register, or a counter wasn't bumped.
+    return e["r0"] != 0 and e["pc"] == RET_SENT
+
+def fault_sweep(max_instr=80):
+    e = fresh()
+    hits, crashes = [], []
+    for i in range(1, max_instr):
+        e.reset()
+        e[ARG_BUF] = b"\x00" * 16            # deliberately wrong input
+        e[KEY_BUF] = KEY
+        e["r0"] = ARG_BUF; e["r1"] = KEY_BUF; e["lr"] = RET_SENT
+        try:
+            e.start_and_fault(fault_skip, i, e.functions[FUNC][0], RET_SENT, count=400)
+        except RuntimeError:
+            crashes.append(i); continue     # fault produced an invalid instruction
+        except IndexError:
+            pass                            # ran off the end before faulting
+        if bypassed(e):
+            hits.append(i); print(f"  skip @ instr {i}: r0={hex(e['r0'])}  <-- BYPASS")
+    print(f"=== {len(hits)} exploitable skips, {len(crashes)} crashes ===  "
+          f"(a robust guard should have 0 exploitable skips)")
+
+if __name__ == "__main__":
+    c = collect(1000)
+    cpa_byte(c, 0)
+    fault_sweep()
+PYEOF
+  chmod +x "$f"
+  ok "wrote $f  —  run it with:  donjon-sca run $f"
+}
+
+case "${1:-help}" in
+  setup)        shift; cmd_setup "$@";;
+  doctor)       shift; cmd_doctor "$@";;
+  run)          shift; cmd_run "$@";;
+  python|py)    shift; cmd_python "$@";;
+  repl|shell)   shift; cmd_repl "$@";;
+  new)          shift; cmd_new "$@";;
+  version|--version|-V) shift || true; cmd_version;;
+  path)         shift || true; cmd_path;;
+  help|-h|--help|"")
+    sed -n '2,18p' "$SELF" | sed 's/^# \{0,1\}//';;
+  *) die "unknown command '$1' — try: donjon-sca help";;
+esac

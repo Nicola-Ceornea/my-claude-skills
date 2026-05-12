@@ -9,17 +9,21 @@ description: Use Ledger Donjon's `lascar` ("Ledger's Advanced Side-Channel Analy
 
 The `tutorial/` and `examples/` directories of the cloned repo are the real docs — `examples/base/cpa.py`, `.../dpa.py`, `.../ttest.py`, `.../snr.py`, the `tutorial/` notebooks (containers, sessions, output methods), and the profiled/ML examples. **Read the closest example before composing an attack.**
 
-## Install
+## Setup & how to run things — the `donjon-sca` CLI
+
+lascar is installed and run through the **`donjon-sca`** CLI (from the [`my-claude-skills`](https://github.com/Nicola-Ceornea/my-claude-skills) repo — on PATH if that repo's `setup.sh` was run), into a dedicated venv it shares with `rainbow`. Prefer it over a bare `python`.
 
 ```bash
-pip3 install "git+https://github.com/Ledger-Donjon/lascar.git"
+donjon-sca doctor                 # check it's installed & importable; if not:
+donjon-sca setup                  # bootstrap/update (clones lascar+rainbow to ~/.local/share/donjon-sca, builds the venv)
+
+donjon-sca run analysis.py        # run a lascar analysis script inside the venv   <-- this is how you execute lascar scripts
+donjon-sca python -c 'from lascar import Session, CpaEngine, TraceBatchContainer; print("ok")'
+donjon-sca repl                   # interactive python with lascar (and rainbow) pre-imported
+donjon-sca new harness.py         # scaffold (the template's analysis half wires container → CpaEngine/TTestEngine for you)
 ```
 
-Pulls a heavy dependency set (numpy, scipy, scikit-learn, numba, h5py, matplotlib, PyQt5, vispy, progressbar2, click — and tensorflow/keras for the ML engines; if you don't need those and the install is painful, install lascar's non-ML deps and skip tensorflow). Verify:
-
-```bash
-python -c "from lascar import Session, CpaEngine, TraceBatchContainer; print('ok')"
-```
+If `donjon-sca` isn't found: `git clone https://github.com/Nicola-Ceornea/my-claude-skills.git ~/repos/my-claude-skills && ~/repos/my-claude-skills/setup.sh`. (Manual fallback: `pip install "git+https://github.com/Ledger-Donjon/lascar.git"` — pulls a heavy dep set: numpy/scipy/scikit-learn/numba/h5py/matplotlib/PyQt5/vispy/progressbar2/click plus tensorflow/keras for the ML engines. CPA/DPA/TVLA/SNR work without tensorflow if that install fights you.)
 
 ## The four core classes
 

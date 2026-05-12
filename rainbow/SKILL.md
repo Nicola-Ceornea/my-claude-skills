@@ -15,24 +15,24 @@ Two introductions worth a skim: the [launch post](https://medium.com/ledger-on-s
 - **Not a substitute for a real SCA/FI bench.** It tests *algorithmic* leakage and *logical* fault-bypass of your code. Analog leakage and silicon countermeasure quality still need a scope + shunt / EM probe (e.g. ChipWhisperer, PicoScope) or a glitcher (ChipWhisperer, Scaffold, a crowbar rig).
 - It traces with **no added noise** — that's intentional (worst-case attacker). You add noise in post-processing if you want a realistic SNR.
 
-## Install
+## Setup & how to run things — the `donjon-sca` CLI
 
-Python ≥ 3.7. Clone and install:
-
-```bash
-git clone https://github.com/Ledger-Donjon/rainbow.git
-cd rainbow
-pip install .              # core: unicorn + capstone + pyelftools
-pip install .[examples]    # also pulls lascar + visplot/vispy/pyqt5 for the example scripts
-```
-
-If `unicorn` or `capstone` wheels fail, install them from the upstream projects (links above) then `pip install . --no-deps`-style. Verify:
+This toolchain is installed and run through the **`donjon-sca`** CLI (from the [`my-claude-skills`](https://github.com/Nicola-Ceornea/my-claude-skills) repo — it's on PATH if that repo's `setup.sh` was run). Always prefer it over a bare `python` — it points at the dedicated venv that has `rainbow`, `lascar`, `unicorn` and `capstone` installed.
 
 ```bash
-python -c "from rainbow.devices import rainbow_stm32f215; print('ok')"
+donjon-sca doctor                 # check it's installed & importable; if not:
+donjon-sca setup                  # bootstrap/update (clones rainbow+lascar to ~/.local/share/donjon-sca, builds the venv)
+
+donjon-sca new my_harness.py      # scaffold a harness (side-channel + fault-injection skeleton, with TODOs)
+donjon-sca run my_harness.py      # run a harness inside the venv   <-- this is how you execute rainbow scripts
+donjon-sca python -c 'from rainbow.devices import rainbow_stm32f215; print("ok")'   # one-liners
+donjon-sca repl                   # interactive python with rainbow + lascar pre-imported
+donjon-sca version
 ```
 
-The `examples/` folder in the clone is the real documentation — `CortexM_AES/` (Thumb AES SCA), `HW_analysis/pin_compare.py` (NICV on a PIN compare), `HW_analysis/pin_fault.py` (instruction-skip sweep against a PIN check), `SecAESSTM32/go.py` (ANSSI secure-AES starting point), `OAES/`, `pimp_my_xor/`, `hacklu2009/`. **Read the closest example before writing a harness from scratch.**
+If `donjon-sca` isn't found at all: `git clone https://github.com/Nicola-Ceornea/my-claude-skills.git ~/repos/my-claude-skills && ~/repos/my-claude-skills/setup.sh`. (Manual fallback: rainbow needs Python ≥ 3.7 and is a `pip install .` from a clone; `unicorn`/`capstone` come as wheels — if they fail, install from the upstream projects linked above.)
+
+The `examples/` folder in the rainbow clone (`~/.local/share/donjon-sca/rainbow/examples/`) is the real documentation — `CortexM_AES/` (Thumb AES SCA), `HW_analysis/pin_compare.py` (NICV on a PIN compare), `HW_analysis/pin_fault.py` (instruction-skip sweep against a PIN check), `SecAESSTM32/go.py` (ANSSI secure-AES starting point), `OAES/`, `pimp_my_xor/`, `hacklu2009/`. **Read the closest example before writing a harness from scratch** — and `donjon-sca new` already lays one down with these blocks filled in.
 
 ## Core API
 
