@@ -1,0 +1,205 @@
+#!/usr/bin/env bash
+# scared-sca — driver for eShard's `scared` side-channel analysis framework,
+# installed into a dedicated venv so it stays off the system Python.
+# scared needs numpy>=2 and python>=3.11; that's incompatible with the
+# lascar/rainbow stack driven by `donjon-sca`, so we keep two venvs side by side.
+#
+#   scared-sca setup           bootstrap / update everything (idempotent)
+#   scared-sca doctor          diagnose the install
+#   scared-sca run FILE [ARGS] run a script inside the scared venv
+#   scared-sca python [ARGS]   the venv's python (e.g. `scared-sca python -c '...'`)
+#   scared-sca repl            interactive python with scared + numpy pre-imported
+#   scared-sca version         print scared / estraces / numpy versions
+#   scared-sca path            print the venv's bin dir
+#
+# Layout (override the root with $SCARED_SCA_HOME):
+#   $SCARED_SCA_HOME/venv      the toolchain virtualenv
+
+set -euo pipefail
+
+SCARED_HOME="${SCARED_SCA_HOME:-$HOME/.local/share/scared-sca}"
+VENV="$SCARED_HOME/venv"
+PY="$VENV/bin/python"
+BIN_DIR="$HOME/.local/bin"
+SKILLS_DIR="$HOME/.claude/skills"
+
+SELF="$(readlink -f "${BASH_SOURCE[0]}" 2>/dev/null || python3 -c 'import os,sys;print(os.path.realpath(sys.argv[1]))' "${BASH_SOURCE[0]}")"
+REPO_ROOT="$(cd "$(dirname "$SELF")/.." && pwd)"
+
+say()  { printf '\033[1;36m==>\033[0m %s\n' "$*"; }
+ok()   { printf '  \033[1;32mOK\033[0m   %s\n' "$*"; }
+warn() { printf '  \033[1;33mWARN\033[0m %s\n' "$*"; }
+err()  { printf '  \033[1;31mFAIL\033[0m %s\n' "$*" >&2; }
+die()  { printf '\033[1;31merror:\033[0m %s\n' "$*" >&2; exit 1; }
+
+need_venv() { [ -x "$PY" ] || die "scared toolchain not installed — run: scared-sca setup"; }
+
+# Find a Python >= 3.11 to build the venv with. scared wheels require it.
+find_python() {
+  local cand
+  for cand in python3.13 python3.12 python3.11 python3; do
+    if command -v "$cand" >/dev/null 2>&1; then
+      if "$cand" -c 'import sys; sys.exit(0 if sys.version_info >= (3,11) else 1)' 2>/dev/null; then
+        echo "$cand"; return 0
+      fi
+    fi
+  done
+  die "no python >= 3.11 found on PATH (scared needs 3.11+; check: python3.11 --version)"
+}
+
+ensure_path_line() {
+  case ":$PATH:" in *":$BIN_DIR:"*) return 0;; esac
+  local line='export PATH="$HOME/.local/bin:$PATH"  # added by my-claude-skills'
+  local rc added=0
+  for rc in "$HOME/.bashrc" "$HOME/.zshrc"; do
+    [ -e "$rc" ] || continue
+    if ! grep -qF 'added by my-claude-skills' "$rc" && ! grep -qF 'added by donjon-sca' "$rc"; then
+      printf '\n%s\n' "$line" >> "$rc"; added=1
+    fi
+  done
+  if [ "$added" = 1 ]; then
+    warn "$BIN_DIR was not on PATH — appended it to your shell rc; open a new shell or: export PATH=\"$BIN_DIR:\$PATH\""
+  else
+    warn "$BIN_DIR is not on PATH — add: export PATH=\"$BIN_DIR:\$PATH\""
+  fi
+}
+
+cmd_setup() {
+  say "scared-sca setup  (home: $SCARED_HOME)"
+  command -v git >/dev/null 2>&1 || warn "git not found (only needed if you'll later install from source)"
+  local PYBOOT; PYBOOT="$(find_python)"
+  say "bootstrapping with $PYBOOT ($("$PYBOOT" --version 2>&1))"
+  "$PYBOOT" -c 'import venv' 2>/dev/null || die "'venv' module missing for $PYBOOT (e.g. sudo apt install python3-venv)"
+
+  mkdir -p "$SCARED_HOME" "$BIN_DIR" "$SKILLS_DIR"
+  if [ ! -x "$PY" ]; then say "creating venv"; "$PYBOOT" -m venv "$VENV"; fi
+  say "installing/updating scared (pulls numba+scipy+estraces, a few minutes on first run)"
+  "$PY" -m pip install --quiet --upgrade pip wheel
+  "$PY" -m pip install --quiet --upgrade scared
+
+  # CLI on PATH
+  ln -sfn "$SELF" "$BIN_DIR/scared-sca"
+  ok "CLI: $BIN_DIR/scared-sca -> $SELF"
+  ensure_path_line
+
+  # Claude Code skill
+  if [ -f "$REPO_ROOT/scared/SKILL.md" ]; then
+    ln -sfn "$REPO_ROOT/scared" "$SKILLS_DIR/scared"
+    ok "skill: $SKILLS_DIR/scared -> $REPO_ROOT/scared"
+  else
+    warn "skill source $REPO_ROOT/scared/SKILL.md not found — is this running from the my-claude-skills repo?"
+  fi
+
+  echo
+  cmd_doctor || true
+  echo
+  say "done. 'scared-sca doctor' anytime; 'scared-sca repl' for an interactive session."
+}
+
+cmd_doctor() {
+  say "scared-sca doctor"
+  local rc=0
+  echo "  home:        $SCARED_HOME"
+  echo "  venv python: $PY"
+  if [ -x "$PY" ]; then ok "venv present ($("$PY" --version 2>&1))"; else err "venv missing — run: scared-sca setup"; rc=1; fi
+  if [ -x "$PY" ]; then
+    "$PY" - <<'PYEOF' || rc=1
+import importlib, importlib.metadata as md, sys
+mods = [("numpy","numpy"), ("scipy","scipy"), ("numba","numba"), ("estraces","estraces"), ("scared","scared")]
+def ver(imp, dist):
+    try: return md.version(dist)
+    except Exception:
+        try: return getattr(importlib.import_module(imp), "__version__", "?")
+        except Exception: return "?"
+bad = 0
+for imp, dist in mods:
+    try:
+        importlib.import_module(imp)
+        print(f"  OK   {imp} {ver(imp, dist)}")
+    except Exception as e:
+        print(f"  FAIL {imp}: {e}", file=sys.stderr); bad += 1
+try:
+    from scared import CPAAttack, DPAAttack, ANOVAAttack, SNRAttack, NICVAttack, MIAAttack, TemplateAttack  # noqa
+    from scared import HammingWeight, Monobit, Value, maxabs, nanmax  # noqa
+    from scared import Container, TTestAnalysis, TTestContainer, Synchronizer  # noqa
+    from scared import attack_selection_function, reverse_selection_function, selection_function  # noqa
+    from scared import traces  # noqa
+    from scared.aes.selection_functions.encrypt import DeltaRLastRounds, FirstSubBytes, LastSubBytes  # noqa
+    print("  OK   scared API surface importable")
+except Exception as e:
+    print(f"  FAIL scared API: {e}", file=sys.stderr); bad += 1
+
+# numpy>=2 check — scared explicitly requires it
+try:
+    import numpy as np
+    major = int(np.__version__.split('.')[0])
+    if major < 2:
+        print(f"  FAIL numpy is {np.__version__} but scared needs >= 2", file=sys.stderr); bad += 1
+    else:
+        print(f"  OK   numpy {np.__version__} satisfies scared's >=2 requirement")
+except Exception as e:
+    print(f"  FAIL numpy version check: {e}", file=sys.stderr); bad += 1
+
+sys.exit(1 if bad else 0)
+PYEOF
+  fi
+  if [ -L "$SKILLS_DIR/scared" ]; then ok "skill linked: $SKILLS_DIR/scared -> $(readlink "$SKILLS_DIR/scared")";
+  elif [ -e "$SKILLS_DIR/scared" ]; then ok "skill present: $SKILLS_DIR/scared";
+  else warn "skill not installed: $SKILLS_DIR/scared (run: scared-sca setup)"; fi
+  case ":$PATH:" in *":$BIN_DIR:"*) ok "$BIN_DIR on PATH";; *) warn "$BIN_DIR not on PATH";; esac
+  return $rc
+}
+
+PREAMBLE='import numpy as np
+import scared
+from scared import (CPAAttack, DPAAttack, ANOVAAttack, NICVAttack, SNRAttack, MIAAttack,
+                    TemplateAttack, TTestAnalysis, TTestContainer, Container,
+                    HammingWeight, Monobit, Value, maxabs, nanmax, nansum, abssum,
+                    attack_selection_function, reverse_selection_function, Synchronizer, traces)
+from scared import aes, des
+print(f"scared {scared.__version__} ready  —  e.g.  ths = traces.read_ths_from_ets_file(\"foo.ets\")")'
+
+cmd_repl() {
+  need_venv
+  if [ -x "$VENV/bin/ipython" ]; then exec "$VENV/bin/ipython" -i -c "$PREAMBLE";
+  else exec "$PY" -i -c "$PREAMBLE"; fi
+}
+
+cmd_run() {
+  need_venv
+  [ $# -ge 1 ] || die "usage: scared-sca run SCRIPT.py [args...]"
+  exec "$PY" "$@"
+}
+
+cmd_python() { need_venv; exec "$PY" "$@"; }
+cmd_path()   { echo "$VENV/bin"; }
+
+cmd_version() {
+  need_venv
+  "$PY" - <<'PYEOF'
+import importlib, importlib.metadata as md
+PKGS = [("scared","scared"), ("estraces","estraces"), ("numpy","numpy"),
+        ("scipy","scipy"), ("numba","numba"), ("psutil","psutil")]
+for imp, dist in PKGS:
+    try:
+        importlib.import_module(imp)
+        try: v = md.version(dist)
+        except Exception: v = getattr(importlib.import_module(imp), "__version__", "?")
+        print(f"{dist:14s} {v}")
+    except Exception as e:
+        print(f"{dist:14s} (not importable: {e})")
+PYEOF
+}
+
+case "${1:-help}" in
+  setup)        shift; cmd_setup "$@";;
+  doctor)       shift; cmd_doctor "$@";;
+  run)          shift; cmd_run "$@";;
+  python|py)    shift; cmd_python "$@";;
+  repl|shell)   shift; cmd_repl "$@";;
+  version|--version|-V) shift || true; cmd_version;;
+  path)         shift || true; cmd_path;;
+  help|-h|--help|"")
+    sed -n '2,17p' "$SELF" | sed 's/^# \{0,1\}//';;
+  *) die "unknown command '$1' — try: scared-sca help";;
+esac
