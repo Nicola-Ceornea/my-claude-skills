@@ -11,6 +11,8 @@ Each skill is a directory with a `SKILL.md` (YAML frontmatter + a body that orie
 | [`rainbow/`](rainbow/SKILL.md) | Ledger Donjon's [rainbow](https://github.com/Ledger-Donjon/rainbow) — emulate an embedded binary with Unicorn to generate side-channel leakage traces and sweep fault-injection models (instruction-skip / stuck-at). Pure software; no scope or glitcher needed. Pairs with `lascar` / `scared`. |
 | [`lascar/`](lascar/SKILL.md) | Ledger Donjon's [lascar](https://github.com/Ledger-Donjon/lascar) — side-channel analysis: CPA / DPA / MIA, TVLA (Welch t-test) leakage assessment, SNR / NICV, profiled & ML attacks, over traces from any source (ChipWhisperer, PicoScope, a scope dump, or rainbow). Low-level Engine/Session/OutputMethod toolkit; TF/Keras profiled-NN engines. |
 | [`scared/`](scared/SKILL.md) | eShard's [scared](https://github.com/eshard/scared) — higher-level CPA / DPA / ANOVA / NICV / SNR / MIA / TVLA / template attacks over `estraces` trace sets (ETS / ChipWhisperer / HDF5 / raw-bin / numpy). Built-in AES & DES round selection functions, `Synchronizer` for trace resync (writes a realigned `.ets`), `convergence_step=` rank-vs-#traces curves. Overlaps `lascar`; pick by workflow — `scared`'s "vs lascar" section in the SKILL.md spells out the tradeoffs. |
+| [`install-andyclaw-dgen1/`](install-andyclaw-dgen1/SKILL.md) | Push an AndyClaw build to a connected dgen1 / Ethereum Phone. AndyClaw is a platform-signed privileged system app, so plain `adb install` fails with `INSTALL_FAILED_UPDATE_INCOMPATIBLE`. This skill covers the actual update path: drop the APK into `~/dgen1/git-V0MP1/packages/apps/AndyClaw/`, run `make sys_images` so the build re-signs it with the platform key, and `adb install` the resulting APK. |
+| [`nv3007-lcd-designer/`](nv3007-lcd-designer/SKILL.md) | Drive a physical **NV3007 SPI LCD** (EastRising ER-TFTM1.65-2, 142×428 RGB565 IPS) from a laptop over a **Waveshare "USB TO UART/I2C/SPI/JTAG"** bridge — to design/iterate UI on the real screen with **no dev board**. The bridge is a WCH **CH347T** (`1a86:55db`, not FTDI), so the driver is a **self-contained pure-Python pyusb/libusb** stack bundled in [`scripts/`](nv3007-lcd-designer/scripts) — macOS + Linux, no kernel module, no vendor DLL. Covers the full panel/bridge spec, wiring, brand-new-machine install, a live PNG→screen loop, and the CH347 vendor protocol. **Standalone** — no `setup.sh` / CLI, just symlink it (see below). |
 
 ## Setup on a fresh machine
 
@@ -31,6 +33,24 @@ That one command, idempotently:
 First run takes several minutes and a few hundred MB. Re-run `~/repos/my-claude-skills/setup.sh` (or each CLI's own `setup`) anytime to pull updates. Claude Code picks up new/changed skills on its next session start. Check it worked: `donjon-sca doctor` and `scared-sca doctor`.
 
 > Just want the skills, not the toolchain? Symlink the dirs you want into `~/.claude/skills/` yourself (`ln -s ~/repos/my-claude-skills/rainbow ~/.claude/skills/rainbow`, etc.) and skip `setup.sh`. Project-scoped alternative: drop a skill dir under `.claude/skills/` inside a repo to make it available only there.
+
+### Standalone skills (no toolchain / no `setup.sh`)
+
+`install-andyclaw-dgen1` and `nv3007-lcd-designer` are self-contained — they don't
+need the SCA venvs. Just make them discoverable:
+
+```bash
+git clone https://github.com/Nicola-Ceornea/my-claude-skills.git ~/repos/my-claude-skills
+mkdir -p ~/.claude/skills
+ln -s ~/repos/my-claude-skills/nv3007-lcd-designer ~/.claude/skills/nv3007-lcd-designer
+```
+
+Then open Claude Code and say what you want (e.g. *"show this mockup on the NV3007"*)
+— the skill's `SKILL.md` walks the agent through the one-time `brew`/`apt` + venv
+setup and the wiring. For `nv3007-lcd-designer` the only host prerequisite is
+**libusb** (`brew install libusb` on macOS, `apt install libusb-1.0-0` on Linux) and
+**Python 3**; the bundled `scripts/requirements.txt` (pyusb, Pillow, numpy) goes in a
+venv the SKILL.md creates.
 
 ## The CLIs
 
